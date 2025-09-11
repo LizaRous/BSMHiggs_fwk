@@ -7,6 +7,7 @@
 #include <string>
 #include <regex>
 
+#include <cctype>
  
 #include "TROOT.h"
 #include "TFile.h"
@@ -573,7 +574,7 @@ void InterpollateProcess(JSONWrapper::Object& Root, TFile* File, std::list<NameA
 
 	  histo->Add(th1fmorph("interpolTemp","interpolTemp", histoL, histoR, massL, massR, mass, Integral, 0), 1.0);
 	  //          printf("%40s - %f - %f -%f    --> %f - %f -%f\n", HistoProperties.name.c_str(), massL, mass, massR, histoL->Integral(), histo->Integral(), histoR->Integral() );
-	  histo->Scale(xsecXbr);          
+	  histo->Scale(108960);          
 	  histoInterpolated = histo;
 	}
 	delete histoR;
@@ -840,10 +841,95 @@ void addShapeUnc(TFile* File, string& dirName, NameAndType& HistoProperties, TH1
   }
 }
 
+// ---------- AXIS LABEL HELPERS ----------
+
+// lowercase copy (for case-insensitive matching)
+static inline std::string tolower_copy(std::string s){
+  std::transform(s.begin(), s.end(), s.begin(),
+                 [](unsigned char c){ return std::tolower(c); });
+  return s;
+}
+
+// true if 'token' appears in 's' at a token boundary (start or after '_')
+// and not followed by an alphabetic char (to avoid matching "...tight...")
+static inline bool contains_token(const std::string& s, const std::string& token){
+  std::string ls = tolower_copy(s), lt = tolower_copy(token);
+  size_t pos = ls.find(lt);
+  while(pos != std::string::npos){
+    bool left_ok  = (pos==0) || (ls[pos-1]=='_' || ls[pos-1]=='/' );
+    bool right_ok = (pos+lt.size()>=ls.size()) || !std::isalpha((unsigned char)ls[pos+lt.size()]);
+    if(left_ok && right_ok) return true;
+    pos = ls.find(lt, pos+1);
+  }
+  return false;
+}
+
+// Decide the X-axis title based on the histogram name
+static inline std::string inferAxisLabel(const std::string& hname){
+  const std::string l = tolower_copy(hname);
+
+  // Special flow histograms
+  if(l.find("eventflow_boosted")!=std::string::npos || l.find("eventflow_resolved")!=std::string::npos)
+    return "Selection cut";
+  if(l.find("mass_h")!=std::string::npos) return "m_{H} [GeV]";
+  if(l.find("pt_h")  !=std::string::npos) return "p_{T}^{H} [GeV]";
+  if(contains_token(l,"met")) return "E_{T}^{miss} [GeV]";
+  if(contains_token(l,"ht")) return "H_{T} [GeV]";
+  if(contains_token(l,"dphi_HZ"))      return "|#Delta#phi(ZH)|";
+  if(contains_token(l,"deta_HZ")) return "|#Delta#eta(ZH)|";
+  if(contains_token(l,"dr_HZ")) return "|#Delta R(ZH)|";
+  if(contains_token(l,"dr_ll")) return "|#Delta R(ll)|";
+  if(contains_token(l,"bdt")) return "BDT score";
+  if(l.find("btag")!=std::string::npos || l.find(" min btag score")!=std::string::npos
+     || l.find("n_jets")!=std::string::npos) return "N_{jets}";
+  if(l.find("nbjet")!=std::string::npos || l.find("nbjets")!=std::string::npos
+     || l.find("n_bjets")!=std::string::npos) return "N_{b-jets}";
+  if(l.find("pt_ll")!=std::string::npos || l.find("pt_Z")!=std::string::npos) return "p_{T}^{Z} [GeV]";
+  if(l.find("mass_ll")!=std::string::npos || l.find("mass_Z")!=std::string::npos) return "m_{T}^{Z} [GeV]";
+
+  return "";
+}
+
+// ---------- EVENTFLOW HELPER----------
+
+enum class EventflowKind { kNone, kBoosted, kResolved };
+
+static inline EventflowKind getEventflowKind(const std::string& hname){
+  const std::string l = tolower_copy(hname);
+  // Check most specific first
+  if(l.find("eventflow_boosted")  != std::string::npos) return EventflowKind::kBoosted;
+  if(l.find("eventflow_resolved") != std::string::npos) return EventflowKind::kResolved;
+ 
+  return EventflowKind::kNone;
+}
+
+static inline void applyEventflowBinLabels(TH1* h, EventflowKind kind){
+  if(!h) return;
+
+  // Per your request
+  static const char* labels_boost[] = {
+    "raw", ">=2 l", "trigger", "m_{ll} window", ">=2jets", ">=2 double bjets"
+  };
+  static const char* labels_res[] = {
+    "raw", ">=2 l", "trigger", "m_{ll} window", ">=3jets", ">=3bjets"
+  };
+
+ 
+  const char** labels = (kind == EventflowKind::kBoosted) ? labels_boost : labels_res;
+
+  const int n = std::min<int>(h->GetNbinsX(), 6);
+  for(int i=1;i<=n;++i){
+    h->GetXaxis()->SetBinLabel(i, labels[i-1]);
+  }
+}
+
+// ---------- END AXIS LABEL HELPERS ----------
 
 
 void Draw1DHistogram(JSONWrapper::Object& Root, TFile* File, NameAndType& HistoProperties){
-   
+  // Decide axis label from histogram name
+  const std::string xLabel = inferAxisLabel(HistoProperties.name);
+
   if(HistoProperties.isIndexPlot && cutIndex<0)return;
 
   TCanvas* c1 = new TCanvas("c1","c1",800,800);
@@ -912,6 +998,10 @@ void Draw1DHistogram(JSONWrapper::Object& Root, TFile* File, NameAndType& HistoP
       continue;
     }
     if(abs(rebin)>0){hist = hist->Rebin(abs(rebin)); hist->Scale(1.0/abs(rebin), rebin<0?"width":""); }
+    const EventflowKind efKind = getEventflowKind(HistoProperties.name);
+  if(efKind != EventflowKind::kNone){
+    applyEventflowBinLabels(hist, efKind);
+  }
 
     utils::root::setStyleFromKeyword(matchingKeyword,Process[i], hist);
      
@@ -1023,9 +1113,20 @@ void Draw1DHistogram(JSONWrapper::Object& Root, TFile* File, NameAndType& HistoP
 
     //draw the stack which will serve as frame
     stack->Draw("");
+    //stack->SetTitle("");
+    //stack->GetXaxis()->SetTitle(((TH1*)stack->GetStack()->At(0))->GetXaxis()->GetTitle());
+    //stack->GetYaxis()->SetTitle(((TH1*)stack->GetStack()->At(0))->GetYaxis()->GetTitle());
     stack->SetTitle("");
-    stack->GetXaxis()->SetTitle(((TH1*)stack->GetStack()->At(0))->GetXaxis()->GetTitle());
-    stack->GetYaxis()->SetTitle(((TH1*)stack->GetStack()->At(0))->GetYaxis()->GetTitle()); 
+
+// X axis: only override if we have a non-empty inferred label
+    if(!xLabel.empty())
+      stack->GetXaxis()->SetTitle(xLabel.c_str());
+    else
+      stack->GetXaxis()->SetTitle(((TH1*)stack->GetStack()->At(0))->GetXaxis()->GetTitle());
+    
+    // Y axis: always "events"
+    stack->GetYaxis()->SetTitle("Events");
+
     stack->GetXaxis()->SetLabelOffset(0.007);
     stack->GetXaxis()->SetLabelSize(0.04);
     stack->GetXaxis()->SetTitleOffset(1.2);
@@ -1317,6 +1418,10 @@ void Draw1DHistogram(JSONWrapper::Object& Root, TFile* File, NameAndType& HistoP
 
 
 void ConvertToTex(JSONWrapper::Object& Root, TFile* File, NameAndType& HistoProperties){
+  //const EventflowKind efKind = getEventflowKind(HistoProperties.name);
+  //if(efKind != EventflowKind::kNone){
+  //  applyEventflowBinLabels(hist, efKind);
+  //}
   if(HistoProperties.isIndexPlot && cutIndex<0)return;
 
   FILE* pFile = NULL;
@@ -1332,7 +1437,14 @@ void ConvertToTex(JSONWrapper::Object& Root, TFile* File, NameAndType& HistoProp
     string dirName = getDirName(Process[i], matchingKeyword);
     TH1* hist = (TH1*)utils::root::GetObjectFromPath(File,dirName + "/" + HistoProperties.name);
     if(!hist)continue;
-
+    {
+      const EventflowKind efKind = getEventflowKind(HistoProperties.name);
+      if(efKind != EventflowKind::kNone){
+        applyEventflowBinLabels(hist, efKind);
+      }
+    }
+      
+    
     if(!pFile){
       string SavePath = utils::root::dropBadCharacters(string(hist->GetName()) + ".tex");
       SavePath = outDir + string("/") + SavePath;
