@@ -574,7 +574,7 @@ void InterpollateProcess(JSONWrapper::Object& Root, TFile* File, std::list<NameA
 
 	  histo->Add(th1fmorph("interpolTemp","interpolTemp", histoL, histoR, massL, massR, mass, Integral, 0), 1.0);
 	  //          printf("%40s - %f - %f -%f    --> %f - %f -%f\n", HistoProperties.name.c_str(), massL, mass, massR, histoL->Integral(), histo->Integral(), histoR->Integral() );
-	  histo->Scale(108960);          
+	  histo->Scale(xsecXbr);         
 	  histoInterpolated = histo;
 	}
 	delete histoR;
